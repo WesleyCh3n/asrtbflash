@@ -18,7 +18,7 @@ std::unique_ptr<uint8_t[]> bufio::Stacker::get_compress_buf(std::ifstream &stm,
 }
 
 bufio::Stacker::Stacker(std::string self_path, std::string out_path) {
-  spdlog::debug("self_path: {}", self_path);
+  spdlog::debug("Output base file: {}", self_path);
   auto self_stm = std::ifstream(self_path, std::ios::binary);
   out_stm_ = std::ofstream(out_path, std::ios::binary);
   if (self_stm.fail()) {
@@ -39,15 +39,15 @@ bufio::Stacker &bufio::Stacker::add_file(const Flag f, std::string path) {
     throw Exception("file not found");
   }
 
+  spdlog::debug("Add file path: {}", path);
   std::string filename = fs::path(path).filename().string();
-  spdlog::debug("add file path: {}", filename);
 
   size_t filename_size = filename.size();
   size_t buf_size;
   auto buf = get_compress_buf(stm, buf_size);
-  spdlog::debug("flag: {}, flag size: {}", f.value, sizeof(Flag));
-  spdlog::debug("filename: {}, filename size: {}", filename, filename_size);
-  spdlog::debug("file size: {}", buf_size);
+  spdlog::debug("\tflag: {}, flag size: {}", f.value, sizeof(Flag));
+  spdlog::debug("\tfilename: {}, filename size: {}", filename, filename_size);
+  spdlog::debug("\tfile size: {}", buf_size);
 
   size_t stm_pos = out_stm_.tellp();
 

@@ -148,8 +148,8 @@ public:
         cmd_str.append(" ");
         cmd_str.append(arg);
       }
-      spdlog::debug("current dir: {}", fs::absolute(cwd_).string());
-      spdlog::debug("cmdline: {}", cmd_str);
+      spdlog::debug("Command pwd: {}", fs::absolute(cwd_).string());
+      spdlog::debug("Command line: {}", cmd_str);
       std::string cwd = fs::absolute(cwd_).string();
 
       PROCESS_INFORMATION pi;
