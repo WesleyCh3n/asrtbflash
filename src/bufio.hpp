@@ -104,6 +104,7 @@ public:
   };
 
   void set_finish_cleanup();
+  void cleanup();
 };
 
 } // namespace bufio

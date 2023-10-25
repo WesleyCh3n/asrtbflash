@@ -2,6 +2,7 @@
 
 #include "bufio.hpp"
 #include "command.hpp"
+#include "console.hpp"
 
 #include <algorithm>
 #include <iostream>
@@ -34,6 +35,7 @@ struct TbflashInfo {
 namespace global {
 std::vector<std::string> model_names;
 std::string output_path;
+std::string tdt_path;
 std::string tool_path;
 std::string firmware_path;
 std::string device_id;
@@ -46,6 +48,7 @@ void parse_dev_args(int argc, char *argv[]) {
   options.add_options()
     ("output", "packed output file path", cxxopts::value<std::string>())
     ("m,model", "motherboard model name", cxxopts::value<std::vector<std::string>>())
+    ("i,intel", "intel tdt tool", cxxopts::value<std::string>())
     ("t,tool", "thunderbolt flash tool path", cxxopts::value<std::string>())
     ("f,firmware", "thunderbolt firmware path", cxxopts::value<std::string>())
     ("d,device", "thunderbolt device id", cxxopts::value<std::string>()->default_value("0x1137"))
@@ -53,7 +56,7 @@ void parse_dev_args(int argc, char *argv[]) {
     ("h,help", "help message");
   // clang-format on
   options.parse_positional({"output"});
-  options.positional_help("<packed output file path>");
+  options.positional_help("<output>");
   options.show_positional_help();
   auto result = options.parse(argc, argv);
 
@@ -63,6 +66,7 @@ void parse_dev_args(int argc, char *argv[]) {
   }
   global::model_names = result["model"].as<std::vector<std::string>>();
   global::output_path = result["output"].as<std::string>();
+  global::tdt_path = result["intel"].as<std::string>();
   global::tool_path = result["tool"].as<std::string>();
   global::firmware_path = result["firmware"].as<std::string>();
   global::device_id = result["device"].as<std::string>();
@@ -74,6 +78,9 @@ int main(int argc, char *argv[]) {
   spdlog::set_level(spdlog::level::debug);
 #else
 #endif
+  auto console = TConsole::GetInstance();
+  console->MouseEnable(false);
+  console->SystemCloseButton(false);
 
   if (fs::path(argv[0]).stem().string() == "asrtbflash") {
     spdlog::set_level(spdlog::level::debug); // TODO
@@ -109,6 +116,8 @@ int main(int argc, char *argv[]) {
       bufio::Stacker::create(argv[0], global::output_path)
           .add_file(bufio::Flag{0xF0, 0xF5, 0xF3, 0xF0}, global::tool_path)
           .add_file(bufio::Flag{0xF1, 0xF0, 0xF2, 0xF4}, global::firmware_path)
+          // TODO: add TDT
+          .add_file(bufio::Flag{0xFA, 0xAF, 0xF5, 0xA3}, global::tdt_path)
           .add_buf(bufio::Flag{0xA0, 0xA5, 0xA3, 0xA0}, model_names)
           .add_buf(bufio::Flag{0xA1, 0xA0, 0xA2, 0xA4}, tbflash_info);
       spdlog::debug("Tbflash args: {}, args size: {}", args, args.size());
@@ -134,7 +143,7 @@ int main(int argc, char *argv[]) {
     TbflashInfo tbflash_args;
     std::string work_dir = (fs::temp_directory_path() / "asrtbflash").string();
     auto destacker = bufio::DeStacker::create(argv[0], work_dir);
-    // destacker.set_finish_cleanup();
+    destacker.set_finish_cleanup();
 
     // 1. check model name valid
     destacker.extract_buf(bufio::Flag{0xA0, 0xA5, 0xA3, 0xA0}, model_names);
@@ -163,21 +172,91 @@ int main(int argc, char *argv[]) {
       spdlog::error("Couldn't flash on the model {}", mb_name);
       fmt::println("Enter to exit...");
       std::cin.get();
+      console->MouseEnable(true);
+      console->SystemCloseButton(true);
+      destacker.cleanup();
       exit(1);
     }
 
     // 2. extract all files
     destacker.extract_file(bufio::Flag{0xF0, 0xF5, 0xF3, 0xF0}); // tbflash
     destacker.extract_file(bufio::Flag{0xF1, 0xF0, 0xF2, 0xF4}); // firmware
+    // TODO: extract TDT
     // 3. extract tbflash args
+    destacker.extract_file(bufio::Flag{0xFA, 0xAF, 0xF5, 0xA3}); // tdt tool
     destacker.extract_buf(bufio::Flag{0xA1, 0xA0, 0xA2, 0xA4}, tbflash_args);
 
     auto args = std::string(tbflash_args.flash_args, tbflash_args.len);
     spdlog::debug("Flashing args: {}", args);
     try {
+      spdlog::info("Initilizing...");
+      // TODO: an thread loop for deleting desktop short cut
+      std::atomic_bool event_stop(false);
+      auto remove_event = std::thread([&event_stop]() {
+        while (!event_stop.load()) {
+          fs::remove_all("C:\\Users\\Public\\Desktop\\TDT.lnk");
+          fs::remove_all(
+              "C:\\Users\\Public\\Desktop\\RunCMDAsAdministrator.lnk");
+          fs::remove_all(
+              "C:\\Users\\Public\\Desktop\\TDT's installation folder.lnk");
+          std::this_thread::sleep_for(std::chrono::milliseconds(1000 / 30));
+        }
+      });
+      // Install and remove TDT
+      std::atomic_bool tdt_done(false);
+      std::atomic_bool tdt_success(true);
+      std::thread tdt_thread([&]() {
+        auto output = process::Command::create("cmd")
+                          .current_dir(work_dir)
+                          .arg("/c")
+                          .arg("TDT /install /quiet")
+                          .build()
+                          ->output();
+        spdlog::debug("output {}", output.status);
+        if (output.status != 0) {
+          tdt_success.store(false);
+          spdlog::error("Initialization failed");
+          spdlog::error("{}", output.stderr_str);
+          tdt_done.store(true);
+        }
+        output = process::Command::create("cmd")
+                     .current_dir(work_dir)
+                     .arg("/c")
+                     .arg("TDT /uninstall /quiet")
+                     .build()
+                     ->output();
+        spdlog::debug("uninstall output {}", output.status);
+        if (output.status != 0) {
+          tdt_success.store(false);
+          spdlog::error("Initialization failed");
+          spdlog::error("{}", output.stderr_str);
+          tdt_done.store(true);
+        }
+        tdt_done.store(true);
+      });
+      const char c[4] = {'\\', '|', '/', '-'};
+      int i = 0;
+      while (!tdt_done) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        fmt::print("Please wait...{}\r", c[i]);
+        i = (i + 1) % 4;
+      }
+      tdt_thread.join();
+      event_stop.store(true);
+      remove_event.join();
+      if (!tdt_success.load()) {
+        fmt::println("Enter to exit...");
+        std::cin.get();
+        console->MouseEnable(true);
+        console->SystemCloseButton(true);
+        destacker.cleanup();
+        exit(1);
+      }
+      spdlog::info("Initialization success");
+
       spdlog::info("Start flashing...");
-      std::atomic_bool done(false);
-      std::atomic_bool success(true);
+      std::atomic_bool flash_done(false);
+      std::atomic_bool flash_success(true);
       std::thread t([&]() {
         auto output = process::Command::create("cmd")
                           .arg("/c")
@@ -187,28 +266,36 @@ int main(int argc, char *argv[]) {
                           .build()
                           ->output();
         if (output.status != 0) {
-          success.store(false);
+          flash_success.store(false);
           spdlog::error("tbflash failed");
           spdlog::error("{}", output.stderr_str);
-          done.store(true);
+          flash_done.store(true);
         }
-        done.store(true);
+        spdlog::debug("stdout: {}", output.stdout_str);
+        flash_done.store(true);
       });
-      const char c[4] = {'\\', '|', '/', '-'};
-      int i = 0;
-      while (!done) {
+
+      i = 0;
+      while (!flash_done) {
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
         fmt::print("Please wait...{}\r", c[i]);
         i = (i + 1) % 4;
       }
       t.join();
-      success.load() ? spdlog::info("Success") : spdlog::error("Failed");
+
+      flash_success.load() ? spdlog::info("Success") : spdlog::error("Failed");
       fmt::println("Enter to exit...");
+      console->MouseEnable(true);
+      console->SystemCloseButton(true);
+      destacker.cleanup();
       std::cin.get();
     } catch (const std::exception &e) {
       spdlog::error(e.what());
       fmt::println("Enter to exit...");
       std::cin.get();
+      console->MouseEnable(true);
+      console->SystemCloseButton(true);
+      destacker.cleanup();
       exit(1);
     }
   }

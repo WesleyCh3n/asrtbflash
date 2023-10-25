@@ -74,3 +74,5 @@ void DeStacker::extract_file(const Flag f) {
 }
 
 void DeStacker::set_finish_cleanup() { cleanup_ = true; }
+
+void DeStacker::cleanup() { fs::remove_all(running_path_); }
